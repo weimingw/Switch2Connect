@@ -45,11 +45,16 @@ $InfPath = ""
 $CertPath = ""
 
 # Define possible search paths
+$nativeArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($nativeArch -eq 'ARM64') {
+    $SearchPaths = @((Join-Path $ScriptDir 'arm64'))
+} else {
 $SearchPaths = @(
     $ScriptDir,
     (Join-Path $RootDir "WinUHid-main\WinUHid Driver\build\Release\x64\WinUHid Driver"),
     (Join-Path $RootDir "external\WinUHid-main\WinUHid Driver\build\Release\x64\WinUHid Driver")
 )
+}
 
 # Find the first path containing WinUHidDriver.inf
 foreach ($path in $SearchPaths) {
@@ -84,6 +89,26 @@ if (-not $InfPath -or -not (Test-Path $InfPath)) {
 if (-not $CertPath -or -not (Test-Path $CertPath)) {
     Write-Host "Error: Driver Certificate not found!" -ForegroundColor Red
     Exit 1
+}
+if ($nativeArch -eq 'ARM64') {
+    $catalogPath = Join-Path $DriverDir 'WinUHidDriver.cat'
+    $driverPath = Join-Path $DriverDir 'WinUHidDriver.dll'
+    if (-not (Test-Path $catalogPath) -or -not (Test-Path $driverPath)) {
+        Write-InstallLog 'ERROR: ARM64 driver DLL or catalog is missing; no changes were made.'
+        Exit 1
+    }
+    $infContent = Get-Content -LiteralPath $InfPath -Raw
+    $bytes = [IO.File]::ReadAllBytes($driverPath)
+    if ($bytes.Length -lt 64) { Write-InstallLog 'ERROR: Invalid ARM64 driver DLL.'; Exit 1 }
+    $pe = [BitConverter]::ToInt32($bytes, 60)
+    if ($pe -lt 0 -or $pe + 6 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0xAA64 -or $infContent -notmatch '(?i)NTarm64') {
+        Write-InstallLog 'ERROR: The driver package does not target ARM64; no changes were made.'
+        Exit 1
+    }
+    if ((Get-AuthenticodeSignature -LiteralPath $catalogPath).Status -ne 'Valid') {
+        Write-InstallLog 'ERROR: ARM64 catalog signature is not trusted; no changes were made.'
+        Exit 1
+    }
 }
 
 # Resolve every required Windows utility before cleaning up an existing driver.
